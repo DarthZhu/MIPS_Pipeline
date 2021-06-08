@@ -35,6 +35,7 @@ module top (
     logic [31:0] pc, instr, readdata;
     logic [31:0] writedata,dataadr;
     logic IOclock, Write;
+    // logic [31:0] resultW;
 
     assign IOclock = ~CLK100MHZ;
     imem imem(pc[7:2], instr);

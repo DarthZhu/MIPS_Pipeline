@@ -27,8 +27,56 @@ module flopr #(parameter WIDTH = 8)(
 );
     always_ff @(posedge clk, posedge reset)
     begin
-        if (reset) q <= 0;
-        else q <= d;    
+        if (reset)  q <= 0;
+        else        q <= d;    
+    end
+endmodule
+
+module floprc #(
+    parameter WIDTH = 8
+) (
+    input  logic                clk, reset, 
+    input  logic                clear,
+    input  logic [WIDTH - 1: 0] d,
+    output logic [WIDTH - 1: 0] q
+);
+    always_ff @(posedge clk, posedge reset)
+    begin
+        if (reset)              q <= 0;
+        else if (clear)         q <= 0;
+        else                    q <= d;
+    end
+endmodule
+
+
+module flopenr #(
+    parameter WIDTH = 8
+) (
+    input  logic                clk, reset, 
+    input  logic                en,
+    input  logic [WIDTH - 1: 0] d,
+    output logic [WIDTH - 1: 0] q
+);
+    always_ff @(posedge clk, posedge reset)
+    begin
+        if (reset)              q <= 0;
+        else if (en)            q <= d;
+    end
+endmodule
+
+module flopenrc #(
+    parameter WIDTH = 8
+) (
+    input  logic                clk, reset, 
+    input  logic                en, clear,
+    input  logic [WIDTH - 1: 0] d,
+    output logic [WIDTH - 1: 0] q
+);
+    always_ff @(posedge clk, posedge reset)
+    begin
+        if (reset)              q <= 0;
+        else if (en & clear)    q <= 0;
+        else if (en)            q <= d;
     end
 endmodule
 
@@ -77,7 +125,7 @@ module regfile(
 );
     logic [31:0] rf[31:0];
 
-    always_ff @(posedge clk)
+    always_ff @(negedge clk)
         if (we3) rf[wa3] <= wd3;
     
     assign rd1 = (ra1 != 0) ? rf[ra1] : 0;
@@ -110,4 +158,11 @@ module alu(
             3'b111: result = a < b;
             default: result = 'x;
         endcase
+endmodule
+
+module eqcmp (
+    input  logic [31:0] a, b,
+    output logic        eq
+);
+    assign eq = (a == b);
 endmodule

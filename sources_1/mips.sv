@@ -22,18 +22,69 @@
 
 module mips(
     input  logic        clk, reset,
-    output logic [31:0] pc,
-    input  logic [31:0] instr,
-    output logic        memwrite,
-    output logic [31:0] aluout, writedata,
-    input  logic [31:0] readdata
+    output logic [31:0] pcF,
+    input  logic [31:0] instrF,
+    output logic        memwriteM,
+    output logic [31:0] aluoutM, writedataM,
+    input  logic [31:0] readdataM
     );
 
-    logic       memtoreg, alusrc, regdst, regwrite, pcsrc, zero, immext;
-    logic [2:0] alucontrol;
-    logic [2:0] jump;
+    logic [5:0] opD, functD;
+    logic       regdstE, alusrcE, pcsrcD;
+    logic       memtoregE, memtoregM, memtoregW, regwriteE, regwriteM, regwriteW;
+    logic [2:0] alucontrolE;
+    logic       flushE, equalD;
+    logic [1:0] branchD;
+    logic [2:0] jumpD;
+    logic       immextD;
 
-    controller  c(instr[31:26], instr[5:0], zero, memtoreg, memwrite, pcsrc, alusrc, regdst, regwrite, jump, alucontrol, immext);
-    datapath    dp(clk, reset, memtoreg, pcsrc, alusrc, regdst, regwrite, jump, alucontrol, zero, pc, instr, aluout, writedata, readdata);
+    controller  c(
+        clk,
+        reset,
+        opD,
+        functD,
+        flushE,
+        equalD,
+        memtoregE,
+        memtoregM,
+        memtoregW,
+        memwriteM,
+        pcsrcD,
+        branchD,
+        alusrcE,
+        regdstE,
+        regwriteE,
+        regwriteM,
+        regwriteW,
+        jumpD,
+        alucontrolE,
+        immextD
+        );
+    
+    datapath    dp(
+        clk,
+        reset,
+        memtoregE,
+        memtoregM,
+        memtoregW,
+        pcsrcD,
+        branchD,
+        alusrcE,
+        regdstE,
+        regwriteE,
+        regwriteM,
+        regwriteW,
+        jumpD,
+        alucontrolE,
+        equalD,
+        pcF,
+        instrF,
+        aluoutM,
+        writedataM,
+        readdataM,
+        opD,
+        functD,
+        flushE
+    );
     
 endmodule

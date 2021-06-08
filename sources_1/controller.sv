@@ -21,30 +21,53 @@
 
 
 module controller(
-    input  logic [5:0]  op, funct,
-    input  logic        zero,
-    output logic        memtoreg, memwrite,
-    output logic        pcsrc, alusrc,
-    output logic        regdst, regwrite,
-    output logic [2:0]  jump,
-    output logic [2:0]  alucontrol,
-    output logic        immext
+    input  logic        clk, reset,
+    input  logic [5:0]  opD, functD,
+    input  logic        flushE, equalD,
+    output logic        memtoregE, memtoregM, memtoregW, memwriteM,
+    output logic        pcsrcD, 
+    output logic [1:0]  branchD,
+    output logic        alusrcE,
+    output logic        regdstE, regwriteE, regwriteM, regwriteW,
+    output logic [2:0]  jumpD,
+    output logic [2:0]  alucontrolE,
+    output logic        immextD
     );
 
-    logic [2:0] aluop;
-    logic       branch, nbranch;
+    logic [2:0] aluopD;
+    logic       memtoregD, memwriteD, alusrcD, regdstD, regwriteD;
+    logic [2:0] alucontrolD;
+    logic       memwriteE;
 
-    maindec md(op, funct, memtoreg, memwrite, branch, nbranch, alusrc, regdst, regwrite, jump, aluop, immext);
-    aludec  ad(funct, aluop, alucontrol);
+    maindec md(opD, functD, memtoregD, memwriteD, branchD, alusrcD, regdstD, regwriteD, jumpD, aluopD, immextD);
+    aludec  ad(functD, aluopD, alucontrolD);
 
-    assign pcsrc = (branch & zero) | (nbranch & (^zero));
+    assign pcsrcD = (branchD[1] & equalD) | (branchD[0] & ~equalD);
+
+    floprc #(8) regE(
+        clk, reset, flushE,
+        {memtoregD, memwriteD, alusrcD, regdstD, regwriteD, alucontrolD},
+        {memtoregE, memwriteE, alusrcE, regdstE, regwriteE, alucontrolE}
+    );
+
+    flopr #(3) regM(
+        clk, reset, 
+        {memtoregE, memwriteE, regwriteE},
+        {memtoregM, memwriteM, regwriteM}
+    );
+
+    flopr #(2) regW(
+        clk, reset,
+        {memtoregM, regwriteM},
+        {memtoregW, regwriteW}
+    );
 endmodule
 
 module maindec(
     input  logic [5:0]  op,
     input  logic [5:0]  funct,
     output logic        memtoreg, memwrite,
-    output logic        branch, nbranch,
+    output logic [1:0]  branch, //{branch, nbranch}
     output logic        alusrc,
     output logic        regdst, regwrite,
     output logic [2:0]  jump, //{jal, jr, j}
@@ -52,7 +75,7 @@ module maindec(
     output logic        immext
     );
     logic [13:0] controls;
-    assign {regwrite, regdst, alusrc, branch, nbranch, memwrite,
+    assign {regwrite, regdst, alusrc, branch, memwrite,
             memtoreg, jump, aluop, immext} = controls;
     always_comb
         case(op)                   //  rr_a_bn_mm_jjj_aaa_i
@@ -63,7 +86,7 @@ module maindec(
                 endcase
             end
             6'b000010: controls <= 14'b00_0_00_00_001_000_0;  // J
-            6'b000011: controls <= 14'b10_1_00_00_101_000_0;  // JAL
+            6'b000011: controls <= 14'b10_0_00_00_101_000_0;  // JAL
             6'b100011: controls <= 14'b10_1_00_01_000_000_0;  // LW
             6'b101011: controls <= 14'b00_1_00_10_000_000_0;  // SW
             6'b000100: controls <= 14'b00_0_10_00_000_001_0;  // BEQ
