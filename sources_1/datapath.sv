@@ -53,6 +53,8 @@ module datapath(
     logic [31:0]    readdataW, resultW;
     logic [31:0]    writedataE;
     logic [2:0]     jumpE;
+    logic           predict_miss, last_taken, is_branchD;
+    logic [31:0]    predict_pc, real_pc_next;
 
     // hazard
     hazard  h(
@@ -60,10 +62,27 @@ module datapath(
         regwriteE, regwriteM, regwriteW,
         memtoregE, memtoregM,
         branchD, jumpD,
+        predict_miss,
         forwardaD, forwardbD, forwardaE, forwardbE,
         stallF, stallD,
-        flushE
+        flushE, flushD
     );
+
+    // branch prediction
+    bpb b(
+        clk,
+        reset,
+        ~stallF,
+        pcF,
+        instrF,
+        predict_miss,
+        is_branchD,
+        last_taken,
+        predict_pc
+    );
+
+    assign predict_miss = (last_taken != pcsrcD) & is_branchD;
+    assign is_branchD = branchD[0] | branchD[1];
 
     // next PC logic
     mux2 #(32)  pcbrmux(
@@ -80,6 +99,13 @@ module datapath(
         'x,
         jumpD[1:0],
         pcnextFD
+    );
+
+    mux2 #(32)  real_pc(
+        predict_pc,
+        pcnextFD,
+        (predict_miss | jumpD[1]),
+        real_pc_next
     );
 
     // register file (decode and writeback)
@@ -99,7 +125,7 @@ module datapath(
         clk,
         reset,
         ~stallF,
-        pcnextFD,
+        real_pc_next,
         pcF
     );
 
@@ -169,7 +195,7 @@ module datapath(
     assign rtD = instrD[20:16];
     assign rdD = instrD[15:11];
 
-    assign flushD = pcsrcD | (jumpD[0] | jumpD[1] | jumpD[2]);
+    // assign flushD = pcsrcD | (jumpD[0] | jumpD[1] | jumpD[2]);
 
     floprc #(3)     jumpReg(
         clk,

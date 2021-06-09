@@ -5,9 +5,10 @@ module hazard(
     input  logic       memtoregE, memtoregM,
     input  logic [1:0] branchD,
     input  logic [2:0] jumpD,
+    input  logic        predict_miss,
     output logic       forwardaD, forwardbD,
     output logic [1:0] forwardaE, forwardbE,
-    output             stallF, stallD, flushE
+    output             stallF, stallD, flushE, flushD
 );
 
 logic lwstallD, branchstallD;
@@ -45,6 +46,7 @@ assign branchstallD = (branchD[0] | branchD[1] | jumpD[1]) &
 
 assign stallD = lwstallD | branchstallD;
 assign stallF = stallD;
-assign flushE = stallD;
+assign flushE = stallD | predict_miss;
+assign flushD = predict_miss | jumpD[1];
 
 endmodule
