@@ -274,7 +274,7 @@ flopenr #(32)   pcreg(
     clk,
     reset,
     ~stallF,
-    pcnextFD,
+    real_pc_next,
     pcF
 );
 
@@ -560,7 +560,183 @@ mux2 #(32)      resmux(
 );
 ```
 
-##### 2.1.2.6 Hazard Unit
+##### 2.1.2.6 Next PC logic
+
+这一部分负责`pc`地址的选择
+
+- branch地址：从Decode阶段取到值，信号`pcsrcD`取到1时，选择该地址。
+- jump地址：
+  - `{pcplus4D[31:28], instrD[25:0], 2'b00}`：`JAL`, `JR`指令的跳转地址计算方式，在jump信号中，这两个指令的最低位为1。
+  - `$ra`：ra寄存器中的地址为`JR`指令的跳转地址，在jump信号中，该指令的第2位为1。
+- 分支预测地址：由bpb单元输出，即预测出的下一条指令地址，若此时上一条的预测出错，或为`JR`指令（用寄存器中的值作为地址），则采用非预测的地址，否则采用预测地址。
+
+```verilog
+mux2 #(32)  pcbrmux(
+    pcplus4F,
+    pcbranchD,
+    pcsrcD,
+    pcnextbrFD
+);
+
+mux4 #(32)  pcmux(
+    pcnextbrFD,
+    {pcplus4D[31:28], instrD[25:0], 2'b00},
+    srca2D,
+    'x,
+    jumpD[1:0],
+    pcnextFD
+);
+
+mux2 #(32)  real_pc(
+    predict_pc,
+    pcnextFD,
+    (predict_miss | jumpD[1]),
+    real_pc_next
+);
+```
+
+### 2.2 Branch Predictor
+
+![](./src/bpb.png)
+
+分支预测器用于预测跳转指令的地址以及是否跳转。在这里，我们采用2位的局部分支跳转预测作为我们预测的标准。
+
+分支预测缓冲(Branch Predict Buffer)是预测器中的主要部分，输入Fetch阶段的指令、`pc`、上一条指令是否miss、上一条指令是否是分支指令，输出是否跳转以及跳转的预测出的地址。
+
+BPB主要分为3个阶段：解析指令，更新Branch History Table，以及预测。
+
+#### 2.2.1 解析指令
+
+判断指令是否为branch类型或者jump类型，并计算对应的`pc+4`, `pc_branch`, `pc_jump`地址。根据指令的类型选择下一条指令是其中的哪一个。
+
+```verilog
+// Parse instr
+logic [5:0]     op;
+logic [31:0]    pc_jump, pc_branch, pcplus4, pc_next;
+logic [31:0]    imm;
+logic           is_branch, is_jump;
+
+assign op = instrF[31:26];
+signext se_bpb(
+    instrF[15:0],
+    imm
+);
+assign pcplus4 = pcF + 32'd4;
+assign pc_jump = {pcplus4[31:28], instrF[25:0], 2'b00};
+assign pc_branch = pcplus4 + (imm << 2);
+
+always_comb begin
+    case (op)
+        6'b000010, 6'b000011: begin
+            {pc_next, is_branch, is_jump} = {pc_jump, 2'b01};      // J, JAL
+        end
+        6'b000100, 6'b000101: begin
+            {pc_next, is_branch, is_jump} = {pc_branch, 2'b10};    // BEQ, BNE
+        end
+        default: begin
+            {pc_next, is_branch, is_jump} = {pcplus4, 2'b00};      // JR and others
+        end
+    endcase
+end
+```
+
+#### 2.2.2 更新Branch History Table
+
+Branch History Table是负责保存跳转指令以及对应的state，并输出预测的state的表格。
+
+通过2位的表项记录每个分支指令的状态：
+
+![](./src/state_machine.png)
+
+- 00: Strongly Not Taken
+- 01: Weakly Not Taken
+- 10: Weakly Taken
+- 11: Strongly Taken
+
+采用这种状态机的好处在于能够保持预测的稳定性，例如：在一个二重循环中，某一个分支指令到达内循环的边界跳出该内循环，此时状态由Strongly Taken变为Weakly Taken，下一次进入内循环时，状态机还是会输出Taken。
+
+状态机由一个`state_switch`部件维护：
+
+```verilog
+module state_switch (
+  input              last_taken,
+  input        [1:0] prev_state,
+  output logic [1:0] next_state
+);
+  always_comb begin
+    unique case (prev_state)
+      2'b00:   next_state = last_taken ? 2'b01 : 2'b00;
+      2'b11:   next_state = last_taken ? 2'b11 : 2'b10;
+      default: next_state = last_taken ? prev_state + 1 : prev_state - 1;
+    endcase
+  end
+endmodule
+```
+
+更新时，需要一个更新使能让表格进行更新，该使能实际上就是Decode阶段中的branch信号，若不是branch信号，也不需要进行修改，以免弄脏数据。
+
+最后，输出的预测状态其实就是指令对应的index的表项。
+
+```verilog
+module bht #(
+    parameter SIZE_WIDTH = 10,
+    parameter INDEX_WIDTH = 10
+) (
+    input  logic                    clk,
+    input  logic                    reset,
+    input  logic                    en,
+    input  logic                    update_en,
+    input  logic                    last_taken,
+    input  logic [INDEX_WIDTH-1: 0] index,
+    output logic [1:0]              state
+);
+    localparam                  SIZE = 2 ** SIZE_WIDTH;
+    logic [1:0]                 entries[SIZE-1 : 0];
+    logic [1:0]                 entry;
+    logic [INDEX_WIDTH-1 : 0]   last_index;
+
+    state_switch sw(
+        last_taken,
+        entries[last_index],
+        entry
+    );
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            entries <= '{default: '0};
+            last_index <= 0;
+        end
+        else if (en) begin
+            if (update_en)
+                entries[last_index] <= entry;
+            last_index <= index;
+        end
+    end
+
+    assign state = entries[index];
+endmodule
+```
+
+#### 2.2.3 预测
+
+预测是否跳转：根据状态的高位以及是否为jump类型指令决定，若有一个为真，则预测跳转。
+
+预测地址：采用跳转地址还是正常的`pc+4`根据`is_jump | (last_taken & is_branch)`判断，即若为jump或者branch且预测为真时，跳转。
+
+```verilog
+// Predict
+always_comb begin
+    if (reset) begin
+        last_taken <= 0;
+    end
+    else if (en) begin
+        last_taken = state[1] | is_jump;
+        predict_pc = is_jump | (last_taken & is_branch) ? pc_next : pcplus4;
+    end
+end
+```
+
+### 2.3 Hazard Unit
 
 冲突分为数据冲突和控制冲突
 
@@ -575,7 +751,10 @@ mux2 #(32)      resmux(
 
 - 结构冲突
 
-  结构冲突来自于branch分支指令和jump跳转指令，在最坏情况下可以由一次stall和一次flush完成。
+  结构冲突来自于branch分支指令和jump跳转指令，以及预测分支发生错误时，在最坏情况下可以由一次stall和一次flush完成。
+
+  - 对于分支指令，若预测发生错误，则此时该分支指令已经进入了Execute阶段，则需要冲刷Decode和Execute阶段的数据，并重新取指。
+  - 对于跳转指令，预测不会出错，只有`JR`指令因为需要读取寄存器中的数值，不能在Fetch阶段直接完成，bpb中直接取下一条指令，因此在Decode阶段取得值之后，冲刷Decode阶段的流水线。
 
 ```verilog
 module hazard(
@@ -585,47 +764,49 @@ module hazard(
     input  logic       memtoregE, memtoregM,
     input  logic [1:0] branchD,
     input  logic [2:0] jumpD,
+    input  logic       predict_miss,
     output logic       forwardaD, forwardbD,
     output logic [1:0] forwardaE, forwardbE,
-    output             stallF, stallD, flushE
+    output             stallF, stallD, flushE, flushD
 );
 
-    logic lwstallD, branchstallD;
+	logic lwstallD, branchstallD;
 
-    assign forwardaD = (rsD != 0 & rsD == writeregM & regwriteM);
-    assign forwardbD = (rtD != 0 & rtD == writeregM & regwriteM);
+	assign forwardaD = (rsD != 0 & rsD == writeregM & regwriteM);
+	assign forwardbD = (rtD != 0 & rtD == writeregM & regwriteM);
 
-    always_comb begin
-        forwardaE = 2'b00;
-        forwardbE = 2'b00;
-        if (rsE != 0) begin
-            if (rsE == writeregM & regwriteM)
-                forwardaE = 2'b10;
-            else if (rsE == writeregW & regwriteW)
-                forwardaE = 2'b01;
-            else begin
-                forwardaE = 2'b00;
-            end
-        end
-        if (rtE != 0) begin
-            if (rtE == writeregM & regwriteM)
-                forwardbE = 2'b10;
-            else if (rtE == writeregW & regwriteW)
-                forwardbE = 2'b01;
-            else begin
-                forwardbE = 2'b00;
-            end
-        end
-    end
-
-    assign lwstallD = memtoregE & (rtE == rsD | rtE == rtD);
-    assign branchstallD = (branchD[0] | branchD[1] | jumpD[1]) & 
-        ((regwriteE & (writeregE == rsD | writeregE == rtD)) |
-         (memtoregM & (writeregM == rsD | writeregM == rtD)));
-
-    assign stallD = lwstallD | branchstallD;
-    assign stallF = stallD;
-    assign flushE = stallD;
+	always_comb begin
+	    forwardaE = 2'b00;
+	    forwardbE = 2'b00;
+	    if (rsE != 0) begin
+	        if (rsE == writeregM & regwriteM)
+	            forwardaE = 2'b10;
+	        else if (rsE == writeregW & regwriteW)
+	            forwardaE = 2'b01;
+	        else begin
+	            forwardaE = 2'b00;
+	        end
+	    end
+	    if (rtE != 0) begin
+	        if (rtE == writeregM & regwriteM)
+	            forwardbE = 2'b10;
+	        else if (rtE == writeregW & regwriteW)
+	            forwardbE = 2'b01;
+	        else begin
+	            forwardbE = 2'b00;
+	        end
+	    end
+	end
+	
+	assign lwstallD = memtoregE & (rtE == rsD | rtE == rtD);
+	assign branchstallD = (branchD[0] | branchD[1] | jumpD[1]) & 
+	    ((regwriteE & (writeregE == rsD | writeregE == rtD)) |
+	     (memtoregM & (writeregM == rsD | writeregM == rtD)));
+	
+	assign stallD = lwstallD | branchstallD;
+	assign stallF = stallD;
+	assign flushE = stallD | predict_miss;
+	assign flushD = predict_miss | jumpD[1];
 
 endmodule
 ```
@@ -640,5 +821,11 @@ endmodule
 
 ![](./src/jump_result.png)
 
-通过观察Decode阶段的指令：`JAL 0x000000E`, `JR $ra`, `J 0x0000002`可以看到：`JAL`指令后冲刷流水线；`JR`指令等待寄存器进行一次stall并冲刷流水线；`J`指令冲刷一次流水线，都得到了正确的结果以及正确的指令。+
+通过观察Decode阶段的指令：`JAL 0x000000E`, `JR $ra`, `J 0x0000002`可以看到：`JAL`指令后冲刷流水线；`JR`指令等待寄存器进行一次stall并冲刷流水线；`J`指令冲刷一次流水线，都得到了正确的结果以及正确的指令。
+
+### 3.3 Branch Predictor测试
+
+![](./src/jump_predict.png)
+
+上图为Fetch阶段的pc以及instr，可以看到在30地址取到`JAL`指令后直接跳转到38地址取得`JR`指令，此时预测错误地址为3c，超出范围，Decode阶段发现寄存器还没有被写，进行一次stall，再进行一次flush，回到正确的指令地址34取地`J`指令，预测到正确的地址08。这一部分的指令说明了在BPB中，jump指令被很好的预测了。
 
