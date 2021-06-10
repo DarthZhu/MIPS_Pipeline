@@ -1,0 +1,14 @@
+    addi, $s0, $zero, 10
+    addi, $s1, $zero, 0
+    addi, $s3, $zero, 0
+For1:
+    beq, $s3, $s0, exit       #if counter= s0 then loop ends
+
+For2:
+    beq, $s1, $s0, exit2      #if counter= s0 then loop ends
+    addi $s1, $s1, 1          #add 1 to counter
+    j For2                    #jump back to the top
+exit2:
+    addi $s1, $zero, 0        #resets s1 to 0 
+    addi $s3, $s3, 1          #add 1 to counter
+    j For1                    #jump back to for loop

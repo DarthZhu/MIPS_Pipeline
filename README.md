@@ -825,7 +825,52 @@ endmodule
 
 ### 3.3 Branch Predictor测试
 
+#### 3.3.1 Jump指令测试
+
 ![](./src/jump_predict.png)
 
 上图为Fetch阶段的pc以及instr，可以看到在30地址取到`JAL`指令后直接跳转到38地址取得`JR`指令，此时预测错误地址为3c，超出范围，Decode阶段发现寄存器还没有被写，进行一次stall，再进行一次flush，回到正确的指令地址34取地`J`指令，预测到正确的地址08。这一部分的指令说明了在BPB中，jump指令被很好的预测了。
 
+#### 3.3.2 Branch指令测试
+
+测试branch类型的指令可以使用嵌套循环查看BPB中的信号数值。
+
+使用的测试汇编语言如下:
+
+```assembly
+    addi, $s0, $zero, 10
+    addi, $s1, $zero, 0
+    addi, $s3, $zero, 0
+For1:
+    beq, $s3, $s0, exit       #if counter= s0 then loop ends
+
+For2:
+    beq, $s1, $s0, exit2      #if counter= s0 then loop ends
+    addi $s1, $s1, 1          #add 1 to counter
+    j For2                    #jump back to the top
+exit2:
+    addi $s1, $zero, 0        #resets s1 to 0 
+    addi $s3, $s3, 1          #add 1 to counter
+    j For1                    #jump back to for loop
+```
+
+对应的机器码为：
+
+```
+2010000A
+20110000
+20130000
+12700008
+12300002
+22310001
+08000004
+20110000
+22730001
+08000003
+```
+
+![](./src/branch_test1.png)
+
+![](./src/branch_test2.png)
+
+在内循环中，branch始终不采用跳转，预测始终为`Strongly Not Taken`，miss始终为0，没有冲刷流水线的操作。上面两张图为第一次branch出错，此时miss发生，状态变为`Weakly Not Taken`，但预测仍然为0，下次branch指令依然不采用跳转。因此，在branch类型指令上，BPB预测能够成立。

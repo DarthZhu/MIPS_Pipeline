@@ -26,7 +26,7 @@ module imem(
     );
     logic [31:0] RAM[63:0];
     initial begin
-        $readmemh("memfile.dat", RAM);
+        $readmemh("nested_loop.dat", RAM);
     end
     assign rd = RAM[a];
 endmodule
